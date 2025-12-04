@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice UI Control</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            transition: all 0.5s;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 2rem;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background: white;
+            transition: all 0.5s;
+        }
+
+        h1 {
+            transition: all 0.5s;
+        }
+
+        .box {
+            width: 100px;
+            height: 100px;
+            background-color: #ddd;
+            margin: 20px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.5s;
+        }
+
+        .controls {
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin-right: 10px;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        #recordingStatus {
+            color: red;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container" id="mainContainer">
+        <h1 id="mainTitle">用声音控制 UI</h1>
+
+        <div class="controls">
+            <p>1. 录音控制:</p>
+            <button id="startBtn" onclick="startRecording()">开始录音</button>
+            <button id="stopBtn" onclick="stopRecording()" disabled>停止录音</button>
+            <span id="recordingStatus"></span>
+
+            <p>2. 或者上传录音文件:</p>
+            <input type="file" id="fileInput" accept="audio/*">
+            <button onclick="uploadFile()">上传文件</button>
+        </div>
+
+        <div id="statusArea"></div>
+
+        <div class="box" id="demoBox">Demo Box</div>
+    </div>
+
+    <script>
+        let pollInterval;
+        let mediaRecorder;
+        let audioChunks = [];
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    // 创建一个 File 对象，模拟文件上传
+                    const file = new File([audioBlob], "recording.webm", { type: "audio/webm" });
+                    uploadAudioFile(file);
+                };
+
+                mediaRecorder.start();
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                document.getElementById('recordingStatus').innerText = "🔴 正在录音...";
+            } catch (err) {
+                console.error("Error accessing microphone:", err);
+                alert("无法访问麦克风: " + err.message);
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('stopBtn').disabled = true;
+                document.getElementById('recordingStatus').innerText = "";
+            }
+        }
+
+        async function uploadFile() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            if (!file) {
+                alert("请先选择文件");
+                return;
+            }
+            uploadAudioFile(file);
+        }
+
+        async function uploadAudioFile(file) {
+            const formData = new FormData();
+            formData.append("file", file);
+
+            document.getElementById('statusArea').innerText = "正在上传...";
+
+            try {
+                const response = await fetch('/transcribe', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+
+                if (data.task_id) {
+                    document.getElementById('statusArea').innerText = "任务 ID: " + data.task_id + " (处理中...)";
+                    startPolling(data.task_id);
+                } else {
+                    alert("上传失败: " + JSON.stringify(data));
+                }
+            } catch (error) {
+                console.error(error);
+                alert("上传出错");
+            }
+        }
+
+        function startPolling(taskId) {
+            if (pollInterval) clearInterval(pollInterval);
+
+            pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`/task/${taskId}`);
+                    const data = await response.json();
+
+                    if (data.status === 'completed') {
+                        clearInterval(pollInterval);
+                        document.getElementById('statusArea').innerText = "完成! 结果: " + data.result;
+
+                        // 尝试解析 JSON 并执行 UI 变更
+                        try {
+                            let command = JSON.parse(data.result);
+                            applyUICommand(command);
+                        } catch (e) {
+                            console.log("结果不是 JSON，可能是普通转录文本", data.result);
+                        }
+                    } else if (data.status === 'failed') {
+                        clearInterval(pollInterval);
+                        document.getElementById('statusArea').innerText = "失败: " + data.result;
+                    }
+                } catch (error) {
+                    console.error(error);
+                }
+            }, 1000);
+        }
+
+        function applyUICommand(cmd) {
+            console.log("Applying command:", cmd);
+
+            if (cmd.action === 'unknown') {
+                console.log("Unknown action, ignoring.");
+                return;
+            }
+
+            let targetElement;
+
+            if (cmd.target.includes('background') || cmd.target.includes('背景')) {
+                targetElement = document.body;
+            } else if (cmd.target.includes('title') || cmd.target.includes('标题')) {
+                targetElement = document.getElementById('mainTitle');
+            } else if (cmd.target.includes('box') || cmd.target.includes('盒子')) {
+                targetElement = document.getElementById('demoBox');
+            } else if (cmd.target.includes('container')) {
+                targetElement = document.getElementById('mainContainer');
+            }
+
+            if (!targetElement) {
+                console.warn("Unknown target:", cmd.target);
+                return;
+            }
+
+            if (cmd.action === 'change_color') {
+                targetElement.style.backgroundColor = cmd.value;
+                targetElement.style.color = isDark(cmd.value) ? 'white' : 'black';
+            } else if (cmd.action === 'change_text') {
+                targetElement.innerText = cmd.value;
+            } else if (cmd.action === 'change_size') {
+                // targetElement.style.fontSize = cmd.value;
+                console.log(`target element is ${targetElement}`);
+                targetElement.style.width = `${cmd.value}px`;
+                targetElement.style.height = `${cmd.value}px`;
+            }
+        }
+
+        function isDark(color) {
+            return ['black', 'blue', 'red', 'purple', 'green'].includes(color.toLowerCase());
+        }
+    </script>
+</body>
+
+</html>
